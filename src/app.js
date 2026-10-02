@@ -10,6 +10,7 @@ import posRoutes from './routes/pos.js';
 import { countryOptions } from './services/country-service.js';
 
 export const app = express();
+if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
 app.disable('x-powered-by');
 app.use(helmet());
 app.use(cors({ origin: (origin, callback) => callback(null, !origin || config.corsOrigins.includes(origin)) }));
