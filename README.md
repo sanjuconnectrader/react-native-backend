@@ -9,7 +9,7 @@ Node.js/Express API for the Expo and desktop POS clients. Supabase PostgreSQL is
 3. Copy `.env.example` to `.env`. Set `DB_HOST`, `DB_PORT=5432`, `DB_NAME=postgres`, `DB_USER=postgres.<project-ref>` for the Session pooler, and `DB_PASSWORD` to the database password. Keep `DB_SSL=true`. Download the project certificate from **Project Settings → Database → SSL Configuration** to `backend/supabase-ca.crt` and set `DB_SSL_CA_FILE=./supabase-ca.crt`. Set unique random `JWT_SECRET` and `OTP_SECRET`, allowed web origins, and SMTP settings. Never put the database password in an `EXPO_PUBLIC_` variable or mobile bundle.
 4. Run `npm run migrate` then `npm run dev`.
 
-Run `npm run check:mail` to verify SMTP connectivity and authentication without sending an email.
+On Render free services, configure `RESEND_API_KEY` and `EMAIL_FROM` to send through Resend's HTTPS API. SMTP remains available for local development. Run `npm run check:mail` to verify that the selected email provider is configured.
 
 The supplied local `.env` uses port 5000. SMTP is required for owner registration, 2FA login, and password reset. The API starts without SMTP in development, but those email flows will fail until it is configured. Do not commit `.env`.
 

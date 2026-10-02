@@ -7,8 +7,8 @@ export function validateEnv() {
   if (process.env.JWT_SECRET.length < 32 || process.env.OTP_SECRET.length < 32) {
     throw new Error('JWT_SECRET and OTP_SECRET must each have at least 32 characters');
   }
-  if (process.env.NODE_ENV === 'production' && !process.env.SMTP_HOST) {
-    throw new Error('SMTP configuration is required in production');
+  if (process.env.NODE_ENV === 'production' && !process.env.RESEND_API_KEY && !process.env.SMTP_HOST) {
+    throw new Error('RESEND_API_KEY or SMTP configuration is required in production');
   }
 }
 

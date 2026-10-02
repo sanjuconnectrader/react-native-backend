@@ -2,7 +2,7 @@ import http from 'node:http';
 import { app } from './src/app.js';
 import { db } from './src/config/database.js';
 import { config, validateEnv } from './src/config/env.js';
-import { verifyMailConnection } from './src/config/mail.js';
+import { mailProvider, verifyMailConnection } from './src/config/mail.js';
 import { initSockets } from './src/sockets/index.js';
 import { startDatabaseMaintenance } from './src/services/database-maintenance.js';
 
@@ -10,10 +10,10 @@ validateEnv();
 await db.authenticate();
 console.log('PostgreSQL connected');
 try {
-  if (await verifyMailConnection()) console.log('Nodemailer SMTP connected');
-  else console.warn('Nodemailer SMTP not configured');
+  if (await verifyMailConnection()) console.log(`${mailProvider} configured`);
+  else console.warn('Email service not configured');
 } catch (error) {
-  console.error(`Nodemailer SMTP connection failed: ${error.code || error.name}`);
+  console.error(`${mailProvider || 'Email service'} connection failed: ${error.code || error.name}`);
   if (process.env.NODE_ENV === 'production') throw error;
 }
 const server = http.createServer(app);

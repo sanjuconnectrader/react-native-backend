@@ -1,15 +1,15 @@
 import 'dotenv/config';
-import { mailConfigured, verifyMailConnection } from '../src/config/mail.js';
+import { mailConfigured, mailProvider, verifyMailConnection } from '../src/config/mail.js';
 
 if (!mailConfigured) {
-  console.error('SMTP configuration is incomplete');
+  console.error('Email service configuration is incomplete');
   process.exitCode = 1;
 } else {
   try {
     await verifyMailConnection();
-    console.log('SMTP connection and authentication succeeded; no email was sent');
+    console.log(`${mailProvider} configuration verified; no email was sent`);
   } catch (error) {
-    console.error(`SMTP check failed: ${error.code || error.name}`);
+    console.error(`${mailProvider || 'Email service'} check failed: ${error.code || error.name}`);
     process.exitCode = 1;
   }
 }
