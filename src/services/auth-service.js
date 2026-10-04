@@ -4,7 +4,7 @@ import jwt from 'jsonwebtoken';
 import { Op, UniqueConstraintError } from 'sequelize';
 import { db } from '../config/database.js';
 import { config } from '../config/env.js';
-import { sendOtp, mailConfigured } from '../config/mail.js';
+import { sendOtp, sendRegistrationConfirmation, mailConfigured } from '../config/mail.js';
 import { User, Restaurant, OTPVerification, RefreshSession, AuditLog } from '../models/index.js';
 import { fail } from '../errors/http-error.js';
 import { normalizePhone, resolveCountry } from './country-service.js';
@@ -72,7 +72,7 @@ export async function registerOwner(data) {
   try { new Intl.DateTimeFormat('en', { timeZone: timezone }); }
   catch { fail(400, 'INVALID_TIMEZONE', 'Device timezone is invalid'); }
   const email = owner.email.toLowerCase();
-  const pending = await User.findOne({ where: { email, role: 'OWNER', emailVerifiedAt: null, active: false } });
+  const pending = await User.findOne({ where: { email, role: 'OWNER', active: false } });
   if (pending) {
     const recent = await OTPVerification.findOne({ where: { userId: pending.id, purpose: 'EMAIL_VERIFICATION', consumedAt: null }, order: [['createdAt', 'DESC']] });
     if (!recent || recent.expiresAt < new Date() || Date.now() - recent.lastSentAt.getTime() >= 60_000) await issueOtp(pending, 'EMAIL_VERIFICATION');
@@ -107,21 +107,19 @@ export async function resendEmailVerification(username) {
   return { message: 'If verification is pending, a code was sent' };
 }
 export async function setPassword(username, password, setupToken) {
-  const user = await User.findOne({ where: { username: username.toUpperCase(), role: 'OWNER' } });
-  if (!user || !user.emailVerifiedAt || user.active) fail(400, 'INVALID_STATE', 'Email verification required');
-  verifyChallenge(setupToken, user, 'PASSWORD_SETUP');
-  await issueOtp(user, 'LOGIN_2FA');
-  user.passwordHash = await bcrypt.hash(password, 12);
-  await user.save();
-  return { username: user.username, activationChallenge: challenge(user, 'ACTIVATION') };
-}
-export async function activateOwner(username, code, activationChallenge) {
-  const user = await User.findOne({ where: { username: username.toUpperCase(), role: 'OWNER', active: false } });
-  if (!user?.passwordHash) fail(400, 'INVALID_STATE', 'Password setup required');
-  verifyChallenge(activationChallenge, user, 'ACTIVATION');
-  await verifyOtp(user, 'LOGIN_2FA', code);
-  user.active = true; await user.save();
-  return session(user);
+  const passwordHash = await bcrypt.hash(password, 12);
+  const { user, loginSession } = await db.transaction(async (transaction) => {
+    const user = await User.findOne({ where: { username: username.toUpperCase(), role: 'OWNER' }, transaction, lock: transaction.LOCK.UPDATE });
+    if (!user || !user.emailVerifiedAt || user.active) fail(400, 'INVALID_STATE', 'Email verification required');
+    verifyChallenge(setupToken, user, 'PASSWORD_SETUP');
+    user.passwordHash = passwordHash;
+    user.active = true;
+    await user.save({ transaction });
+    return { user, loginSession: await session(user, transaction) };
+  });
+  try { await sendRegistrationConfirmation(user.email, user.username); }
+  catch (error) { console.error(`Registration confirmation delivery failed [${error.code || error.name}]: ${error.message}`); }
+  return loginSession;
 }
 export async function ownerLogin(username, password) {
   const user = await User.findOne({ where: { username: username.toUpperCase(), role: 'OWNER', active: true } });

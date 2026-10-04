@@ -21,7 +21,6 @@ router.post('/owner/register', check(Joi.object({ owner: Joi.object({ firstName:
 router.post('/owner/verify-email', check(Joi.object({ username, code })), wrap(async (req, res) => ok(res, await auth.verifyEmail(req.body.username, req.body.code))));
 router.post('/owner/resend-code', check(Joi.object({ username })), wrap(async (req, res) => ok(res, await auth.resendEmailVerification(req.body.username))));
 router.post('/owner/set-password', check(Joi.object({ username, password, setupToken: Joi.string().required() })), wrap(async (req, res) => ok(res, await auth.setPassword(req.body.username, req.body.password, req.body.setupToken))));
-router.post('/owner/activate', check(Joi.object({ username, code, activationChallenge: Joi.string().required() })), wrap(async (req, res) => ok(res, await auth.activateOwner(req.body.username, req.body.code, req.body.activationChallenge))));
 router.post('/owner/login', check(Joi.object({ username, password: Joi.string().required() })), wrap(async (req, res) => ok(res, await auth.ownerLogin(req.body.username, req.body.password))));
 router.post('/owner/verify-login', check(Joi.object({ username, code, loginChallenge: Joi.string().required() })), wrap(async (req, res) => ok(res, await auth.ownerLoginVerify(req.body.username, req.body.code, req.body.loginChallenge))));
 router.post('/employee/login', check(Joi.object({ username, pin: Joi.string().pattern(/^\d{4,8}$/).required() })), wrap(async (req, res) => ok(res, await auth.employeeLogin(req.body.username, req.body.pin))));

@@ -41,7 +41,7 @@ All responses use `{ success, message, data }` or `{ success: false, message, er
 
 | Flow | Endpoint |
 | --- | --- |
-| Owner registration | `POST /api/auth/owner/register`, `/owner/verify-email`, `/owner/set-password`, `/owner/activate` |
+| Owner registration | `POST /api/auth/owner/register`, `/owner/verify-email`, `/owner/set-password` (returns a session and sends a confirmation email with the username) |
 | Country picker | `GET /api/countries` |
 | Owner login | `POST /api/auth/owner/login`, `/owner/verify-login` |
 | Employee login | `POST /api/auth/employee/login` |

@@ -24,12 +24,17 @@ export async function verifyMailConnection() {
   await withConnectionRetry(() => mailer.verify());
   return true;
 }
-
-export async function sendOtp(email, purpose, code) {
+async function sendMessage(message) {
   if (!mailConfigured) throw new Error('Email service is not configured');
+  await withConnectionRetry(() => mailer.sendMail({ from: fromAddress, ...message }));
+}
+export async function sendOtp(email, purpose, code) {
   const subject = {
     EMAIL_VERIFICATION: 'Verify your email', LOGIN_2FA: 'Your login code', PASSWORD_RESET: 'Reset your password',
   }[purpose];
   const message = { to: email, subject, text: `Your ${subject.toLowerCase()} is ${code}. It expires in 10 minutes.` };
-  await withConnectionRetry(() => mailer.sendMail({ from: fromAddress, ...message }));
+  await sendMessage(message);
+}
+export async function sendRegistrationConfirmation(email, username) {
+  await sendMessage({ to: email, subject: 'Your ServeFlow POS account is ready', text: `Your ServeFlow POS account has been successfully registered.\n\nUsername: ${username}\n\nYou can now sign in with this username and your password.` });
 }
