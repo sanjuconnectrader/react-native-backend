@@ -37,11 +37,8 @@ async function issueOtp(user, purpose) {
   try { await sendOtp(user.email, purpose, code); }
   catch (error) {
     await record.destroy();
-    if (['ETIMEDOUT', 'ESOCKET', 'ECONNECTION', 'EEMAILAPI', 'EMAIL_RATE_LIMITED'].includes(error.code)) {
-      console.error(`Email delivery failed [${error.code}]: ${error.message}`);
-      fail(503, 'EMAIL_UNAVAILABLE', 'Email service is temporarily unreachable. Please retry.');
-    }
-    throw error;
+    console.error(`Email delivery failed [${error.code || error.name}]: ${error.message}`);
+    fail(503, 'EMAIL_UNAVAILABLE', 'Email service is temporarily unreachable. Please retry.');
   }
   return record;
 }
