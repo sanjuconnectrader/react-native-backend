@@ -18,7 +18,10 @@ app.use(express.json({ limit: '100kb' }));
 app.get('/api/countries', (_req, res) => res.json({ success: true, message: 'OK', data: countryOptions }));
 app.use('/api/auth', rateLimit({ windowMs: 15 * 60_000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false }), authRoutes);
 app.use('/api', posRoutes);
-app.get('/health', (_req, res) => res.json({ success: true, message: 'OK', data: { status: 'up' } }));
+app.get('/health', (_req, res) => res.json({ success: true, message: 'OK', data: {
+  status: 'up',
+  revision: process.env.RENDER_GIT_COMMIT?.slice(0, 7) || process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) || null,
+} }));
 app.use((_req, res) => res.status(404).json({ success: false, message: 'Route not found', errorCode: 'NOT_FOUND' }));
 app.use((error, _req, res, _next) => {
   let status = error.status || error.cause?.status || 500;
