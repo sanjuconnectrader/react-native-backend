@@ -27,16 +27,16 @@ export const RolePermission = define('role_permissions', { roleId: ref('roles'),
 export const Category = define('categories', {
   restaurantId: ref('restaurants'), name: text(), description: D.TEXT, displayOrder: { type: D.INTEGER, defaultValue: 0, allowNull: false },
   active: { type: D.BOOLEAN, defaultValue: true, allowNull: false },
-}, { indexes: [{ fields: ['restaurant_id'] }] });
+}, { paranoid: true, indexes: [{ fields: ['restaurant_id'] }] });
 export const MenuItem = define('menu_items', {
   restaurantId: ref('restaurants'), categoryId: ref('categories'), name: text(), description: D.TEXT,
   price: money(), taxBasisPoints: { type: D.INTEGER, defaultValue: 0, allowNull: false },
   available: { type: D.BOOLEAN, defaultValue: true, allowNull: false }, active: { type: D.BOOLEAN, defaultValue: true, allowNull: false }, kitchenStation: text(true),
-}, { indexes: [{ fields: ['restaurant_id', 'category_id'] }] });
+}, { paranoid: true, indexes: [{ fields: ['restaurant_id', 'category_id'] }] });
 export const DiningTable = define('dining_tables', {
   restaurantId: ref('restaurants'), tableNumber: text(), name: text(true), section: text(true),
   capacity: { type: D.INTEGER, allowNull: false }, status: { type: D.STRING(30), defaultValue: 'AVAILABLE', allowNull: false },
-}, { indexes: [{ unique: true, fields: ['restaurant_id', 'table_number'] }] });
+}, { paranoid: true, indexes: [{ unique: true, fields: ['restaurant_id', 'table_number'], where: { deleted_at: null } }] });
 export const Reservation = define('reservations', {
   restaurantId: ref('restaurants'), tableId: ref('dining_tables', true), customerName: text(), phone: text(true),
   guestCount: { type: D.INTEGER, allowNull: false }, startAt: { type: D.DATE, allowNull: false }, notes: D.TEXT,

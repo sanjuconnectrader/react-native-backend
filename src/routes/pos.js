@@ -49,10 +49,26 @@ function crud(path, model, permissionView, permissionManage, schema, event) {
     ok(res, row);
   }));
   router.delete(`${path}/:id`, requirePermission(permissionManage), wrap(async (req, res) => {
-    const row = await model.findOne({ where: { id: req.params.id, ...tenant(req) } });
-    if (!row) fail(404, 'NOT_FOUND', 'Record not found');
-    if ('active' in row) await row.update({ active: false }); else fail(409, 'DELETE_UNSUPPORTED', 'Deactivate or update this record instead');
-    ok(res, { id: row.id });
+    const deleted = await db.transaction(async (transaction) => {
+      const row = await model.findOne({ where: { id: req.params.id, ...tenant(req) }, transaction, lock: transaction.LOCK.UPDATE });
+      if (!row) fail(404, 'NOT_FOUND', 'Record not found');
+
+      if (model === DiningTable) {
+        if (row.status !== 'AVAILABLE') fail(409, 'TABLE_IN_USE', 'Only available tables can be deleted');
+        const [openOrders, reservations] = await Promise.all([
+          Order.count({ where: { tableId: row.id, ...tenant(req), status: { [Op.notIn]: ['CANCELLED', 'CLOSED'] } }, transaction }),
+          Reservation.count({ where: { tableId: row.id, ...tenant(req), status: { [Op.in]: ['PENDING', 'CONFIRMED', 'SEATED'] } }, transaction }),
+        ]);
+        if (openOrders || reservations) fail(409, 'TABLE_IN_USE', 'Finish active orders and reservations before deleting this table');
+      }
+
+      if (model === Category) await MenuItem.destroy({ where: { categoryId: row.id, ...tenant(req) }, transaction });
+      await row.destroy({ transaction });
+      await AuditLog.create({ restaurantId: req.auth.restaurantId, actorUserId: req.auth.userId, action: 'RECORD_DELETED', subjectType: model.tableName, subjectId: row.id }, { transaction });
+      return { id: row.id };
+    });
+    if (event) emitRestaurant(req.auth.restaurantId, event, { id: deleted.id, deleted: true });
+    ok(res, deleted);
   }));
 }
 
