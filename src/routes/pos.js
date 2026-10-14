@@ -5,7 +5,7 @@ import Joi from 'joi';
 import { Op } from 'sequelize';
 import { db } from '../config/database.js';
 import { authenticate, requirePermission } from '../middleware/auth.js';
-import { Restaurant, User, Employee, Category, MenuItem, DiningTable, Reservation, Order, OrderItem, Payment, Refund, Receipt, AuditLog, Role, Permission, RolePermission, RestaurantSetting, Shift } from '../models/index.js';
+import { Restaurant, User, Employee, Category, MenuItem, DiningTable, Reservation, Order, OrderItem, Payment, Refund, Receipt, AuditLog, Role, Permission, RolePermission, RestaurantSetting, Shift, RefreshSession } from '../models/index.js';
 import { uniqueUsername, publicUser } from '../services/auth-service.js';
 import { createOrder, addItem, transition, voidItem, cancelOrder } from '../services/order-service.js';
 import { confirmPayment, confirmRefund } from '../services/payment-service.js';
@@ -27,6 +27,14 @@ const check = (schema) => (req, _res, next) => {
 const uuid = Joi.string().uuid().required();
 const amount = Joi.string().pattern(/^(0|[1-9]\d{0,10})(\.\d{1,2})?$/).required();
 const tenant = (req) => ({ restaurantId: req.auth.restaurantId });
+const employeeTags = Joi.array().items(Joi.string().valid('WAITER', 'KITCHEN', 'CHEF', 'BILLER')).unique().max(4);
+const employeeProfile = (user, employee) => ({
+  ...publicUser(user),
+  email: user.email?.endsWith('@employee.invalid') ? null : user.email,
+  phone: user.phone,
+  designation: employee.designation,
+  tags: employee.tags || [],
+});
 
 function crud(path, model, permissionView, permissionManage, schema, event) {
   router.get(path, requirePermission(permissionView), wrap(async (req, res) => ok(res, await model.findAll({ where: tenant(req), order: [['createdAt', 'DESC']] }))));
@@ -76,25 +84,23 @@ crud('/categories', Category, 'VIEW_MENU', 'MANAGE_MENU', Joi.object({ name: Joi
 crud('/menu-items', MenuItem, 'VIEW_MENU', 'MANAGE_MENU', Joi.object({ categoryId: uuid, name: Joi.string().required(), description: Joi.string().allow('', null), price: amount, taxBasisPoints: Joi.number().integer().min(0).max(10000), available: Joi.boolean(), active: Joi.boolean(), kitchenStation: Joi.string().allow('', null) }), null);
 crud('/tables', DiningTable, 'VIEW_TABLES', 'MANAGE_TABLES', Joi.object({ tableNumber: Joi.string().required(), name: Joi.string().allow('', null), section: Joi.string().allow('', null), capacity: Joi.number().integer().min(1).required() }), 'table:updated');
 
-router.post('/employees', requirePermission('MANAGE_EMPLOYEES'), check(Joi.object({ firstName: Joi.string().required(), lastName: Joi.string().required(), email: Joi.string().email().allow('', null), phone: Joi.string().allow('', null), phoneCountryCode: Joi.string().length(2), designation: Joi.string().trim().max(255).required(), role: Joi.string().valid('MANAGER','CASHIER','WAITER','KITCHEN').required() })), wrap(async (req, res) => {
+router.post('/employees', requirePermission('MANAGE_EMPLOYEES'), check(Joi.object({ firstName: Joi.string().trim().required(), lastName: Joi.string().trim().required(), email: Joi.string().email().allow('', null), phone: Joi.string().allow('', null), phoneCountryCode: Joi.string().length(2), designation: Joi.string().trim().max(255).required(), role: Joi.string().valid('MANAGER','CASHIER','WAITER','KITCHEN').required(), tags: employeeTags.default([]) })), wrap(async (req, res) => {
   const username = await uniqueUsername(req.body.firstName.normalize('NFKD').replace(/[^a-z]/gi, '').toUpperCase().padEnd(3, 'X').slice(0, 3));
   const pin = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
   const user = await db.transaction(async (transaction) => {
-    const { phoneCountryCode, ...fields } = req.body;
+    const { phoneCountryCode, designation, tags, ...fields } = req.body;
     const row = await User.create({ ...fields, phone: normalizeOptionalPhone(req.body.phone, phoneCountryCode), email: req.body.email?.toLowerCase() || `${username.toLowerCase()}@employee.invalid`, username, restaurantId: req.auth.restaurantId, active: true }, { transaction });
-    await Employee.create({ restaurantId: req.auth.restaurantId, userId: row.id, designation: req.body.designation, pinHash: await bcrypt.hash(pin, 12) }, { transaction });
+    await Employee.create({ restaurantId: req.auth.restaurantId, userId: row.id, designation, tags, pinHash: await bcrypt.hash(pin, 12) }, { transaction });
     await AuditLog.create({ restaurantId: req.auth.restaurantId, actorUserId: req.auth.userId, action: 'EMPLOYEE_CREATED', subjectType: 'USER', subjectId: row.id }, { transaction });
     return row;
   });
   ok(res, { user: publicUser(user), initialPin: pin }, 'Employee created; show PIN once', 201);
 }));
 router.get('/employees', requirePermission('VIEW_EMPLOYEES'), wrap(async (req, res) => {
-  const [users, employees] = await Promise.all([
-    User.findAll({ where: { ...tenant(req), role: { [Op.ne]: 'OWNER' } } }),
-    Employee.findAll({ where: tenant(req), attributes: ['userId', 'designation'] }),
-  ]);
-  const designations = new Map(employees.map((employee) => [employee.userId, employee.designation]));
-  ok(res, users.map((user) => ({ ...publicUser(user), designation: designations.get(user.id) || '' })));
+  const employees = await Employee.findAll({ where: tenant(req) });
+  const users = await User.findAll({ where: { ...tenant(req), id: employees.map((employee) => employee.userId), role: { [Op.ne]: 'OWNER' } } });
+  const byUserId = new Map(employees.map((employee) => [employee.userId, employee]));
+  ok(res, users.map((user) => employeeProfile(user, byUserId.get(user.id))));
 }));
 router.get('/owners/me', wrap(async (req, res) => {
   if (req.auth.role !== 'OWNER') fail(403, 'FORBIDDEN', 'Owner access required');
@@ -102,16 +108,39 @@ router.get('/owners/me', wrap(async (req, res) => {
 }));
 router.post('/employees/:id/reset-pin', requirePermission('MANAGE_EMPLOYEES'), wrap(async (req, res) => {
   const user = await User.findOne({ where: { id: req.params.id, ...tenant(req), role: { [Op.ne]: 'OWNER' } } });
-  if (!user) fail(404, 'NOT_FOUND', 'Employee not found');
+  const employee = user && await Employee.findOne({ where: { userId: user.id, ...tenant(req) } });
+  if (!employee) fail(404, 'NOT_FOUND', 'Employee not found');
   const pin = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
   await Employee.update({ pinHash: await bcrypt.hash(pin, 12) }, { where: { userId: user.id, ...tenant(req) } });
   await AuditLog.create({ restaurantId: req.auth.restaurantId, actorUserId: req.auth.userId, action: 'PIN_RESET', subjectType: 'USER', subjectId: user.id });
   ok(res, { initialPin: pin });
 }));
-router.patch('/employees/:id', requirePermission('MANAGE_EMPLOYEES'), check(Joi.object({ active: Joi.boolean(), role: Joi.string().valid('MANAGER','CASHIER','WAITER','KITCHEN') }).min(1)), wrap(async (req, res) => {
-  const user = await User.findOne({ where: { id: req.params.id, ...tenant(req), role: { [Op.ne]: 'OWNER' } } });
-  if (!user) fail(404, 'NOT_FOUND', 'Employee not found');
-  await user.update(req.body); ok(res, publicUser(user));
+router.patch('/employees/:id', requirePermission('MANAGE_EMPLOYEES'), check(Joi.object({ firstName: Joi.string().trim().min(1), lastName: Joi.string().trim().min(1), email: Joi.string().email().allow('', null), phone: Joi.string().allow('', null), phoneCountryCode: Joi.string().length(2), designation: Joi.string().trim().min(1).max(255), tags: employeeTags, active: Joi.boolean(), role: Joi.string().valid('MANAGER','CASHIER','WAITER','KITCHEN') }).min(1)), wrap(async (req, res) => {
+  const result = await db.transaction(async (transaction) => {
+    const user = await User.findOne({ where: { id: req.params.id, ...tenant(req), role: { [Op.ne]: 'OWNER' } }, transaction, lock: transaction.LOCK.UPDATE });
+    const employee = user && await Employee.findOne({ where: { userId: user.id, ...tenant(req) }, transaction });
+    if (!employee) fail(404, 'NOT_FOUND', 'Employee not found');
+    const { designation, tags, phoneCountryCode, ...userChanges } = req.body;
+    if (Object.hasOwn(userChanges, 'email')) userChanges.email = userChanges.email?.toLowerCase() || `${user.username.toLowerCase()}@employee.invalid`;
+    if (Object.hasOwn(userChanges, 'phone')) userChanges.phone = normalizeOptionalPhone(userChanges.phone, phoneCountryCode);
+    await user.update(userChanges, { transaction });
+    await employee.update({ ...(designation !== undefined && { designation }), ...(tags !== undefined && { tags }) }, { transaction });
+    return employeeProfile(user, employee);
+  });
+  ok(res, result);
+}));
+router.delete('/employees/:id', requirePermission('MANAGE_EMPLOYEES'), wrap(async (req, res) => {
+  const result = await db.transaction(async (transaction) => {
+    const user = await User.findOne({ where: { id: req.params.id, ...tenant(req), role: { [Op.ne]: 'OWNER' } }, transaction, lock: transaction.LOCK.UPDATE });
+    const employee = user && await Employee.findOne({ where: { userId: user.id, ...tenant(req) }, transaction });
+    if (!employee) fail(404, 'NOT_FOUND', 'Employee not found');
+    await user.update({ active: false }, { transaction });
+    await employee.destroy({ transaction });
+    await RefreshSession.update({ revokedAt: new Date() }, { where: { userId: user.id, revokedAt: null }, transaction });
+    await AuditLog.create({ restaurantId: req.auth.restaurantId, actorUserId: req.auth.userId, action: 'EMPLOYEE_DELETED', subjectType: 'USER', subjectId: user.id }, { transaction });
+    return { id: user.id };
+  });
+  ok(res, result);
 }));
 
 router.post('/orders', requirePermission('CREATE_ORDER'), check(Joi.object({ type: Joi.string().valid('DINE_IN','TAKEAWAY','PHONE_ORDER').required(), tableId: Joi.string().uuid() })), wrap(async (req, res) => ok(res, await createOrder(req.auth, req.body), 'Created', 201)));

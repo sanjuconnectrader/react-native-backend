@@ -58,6 +58,8 @@ All responses use `{ success, message, data }` or `{ success: false, message, er
 
 Protected endpoints require `Authorization: Bearer <accessToken>`. Socket.IO connects with `auth: { token: accessToken }` and joins only the authenticated restaurant room.
 
+Employee profiles have one access `role` and optional display `tags` (`WAITER`, `KITCHEN`, `CHEF`, `BILLER`). Tags are labels only and do not grant permissions. `DELETE /api/employees/:id` deactivates the account, revokes refresh sessions, and removes it from the team list while retaining historical orders and audit records. Run the employee tags/archive migration before deploying this API change.
+
 Registration sends `owner.phoneCountryCode` (two letter ISO country code) and a national `owner.phone`. The backend validates and stores the phone in E.164 format and derives the restaurant's country, currency, and locale. The mobile app supplies its device timezone automatically; the backend accepts an optional IANA timezone and defaults to UTC for other clients. Employee, reservation, and restaurant contact phone updates can also send `phoneCountryCode` with a national `phone`. Country, currency, locale, and timezone are not separate registration inputs.
 
 `/owner/verify-email` returns a short lived `setupToken`; send it to `/owner/set-password`. That endpoint returns an `activationChallenge`, which is required with the emailed code at `/owner/activate`. Later `/owner/login` returns a `loginChallenge` after password validation; send it with the emailed code to `/owner/verify-login`.

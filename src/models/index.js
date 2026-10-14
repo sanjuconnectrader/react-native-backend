@@ -20,7 +20,8 @@ export const User = define('users', {
 }, { indexes: [{ unique: true, fields: ['username'] }, { unique: true, fields: ['email'] }, { fields: ['restaurant_id'] }] });
 export const Employee = define('employees', {
   restaurantId: ref('restaurants'), userId: ref('users'), designation: text(), pinHash: text(),
-}, { indexes: [{ unique: true, fields: ['user_id'] }, { fields: ['restaurant_id'] }] });
+  tags: { type: D.JSONB, allowNull: false, defaultValue: [] },
+}, { paranoid: true, indexes: [{ unique: true, fields: ['user_id'] }, { fields: ['restaurant_id'] }] });
 export const Role = define('roles', { restaurantId: ref('restaurants'), name: text() }, { indexes: [{ unique: true, fields: ['restaurant_id', 'name'] }] });
 export const Permission = define('permissions', { code: text() }, { indexes: [{ unique: true, fields: ['code'] }] });
 export const RolePermission = define('role_permissions', { roleId: ref('roles'), permissionId: ref('permissions') }, { indexes: [{ unique: true, fields: ['role_id', 'permission_id'] }] });
