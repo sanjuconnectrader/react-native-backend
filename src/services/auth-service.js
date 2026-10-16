@@ -56,23 +56,16 @@ async function issueRegistrationVerification(user) {
   const sentInHour = await OTPVerification.count({ where: { userId: user.id, purpose: 'EMAIL_VERIFICATION', createdAt: { [Op.gte]: new Date(Date.now() - 60 * 60_000) } } });
   if (sentInHour >= 5) fail(429, 'VERIFICATION_LIMIT', 'Please wait before requesting another verification email');
   const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
-  const rawToken = crypto.randomBytes(32).toString('base64url');
   const now = new Date();
   const otp = await OTPVerification.create({ userId: user.id, purpose: 'EMAIL_VERIFICATION', codeHash: hash(`${user.id}:EMAIL_VERIFICATION:${code}`), expiresAt: new Date(now.getTime() + 600_000), lastSentAt: now });
-  let link;
-  try { link = await EmailVerificationToken.create({ userId: user.id, tokenHash: tokenHash(rawToken), expiresAt: new Date(now.getTime() + 86_400_000) }); }
-  catch (error) { await otp.destroy(); throw error; }
   try {
-    await sendRegistrationVerification(user.email, user.username, code, `${config.verificationBaseUrl}/verify-email#token=${rawToken}`);
+    await sendRegistrationVerification(user.email, user.username, code);
   } catch (error) {
-    await Promise.all([otp.destroy(), link.destroy()]);
+    await otp.destroy();
     console.error(`Email delivery failed [${error.code || error.name}]: ${error.message}`);
     fail(503, 'EMAIL_UNAVAILABLE', 'Email service is temporarily unreachable. Please retry.');
   }
-  await Promise.all([
-    OTPVerification.update({ consumedAt: now }, { where: { userId: user.id, purpose: 'EMAIL_VERIFICATION', consumedAt: null, id: { [Op.ne]: otp.id } } }),
-    EmailVerificationToken.update({ consumedAt: now }, { where: { userId: user.id, consumedAt: null, id: { [Op.ne]: link.id } } }),
-  ]);
+  await OTPVerification.update({ consumedAt: now }, { where: { userId: user.id, purpose: 'EMAIL_VERIFICATION', consumedAt: null, id: { [Op.ne]: otp.id } } });
 }
 async function verifyOtp(user, purpose, code) {
   let rejection;
@@ -142,7 +135,7 @@ export async function resendEmailVerification(username) {
       if (!['VERIFICATION_COOLDOWN', 'VERIFICATION_LIMIT', 'EMAIL_UNAVAILABLE'].includes(error.code)) throw error;
     }
   }
-  return { message: 'If registration is pending, check your email for a verification link and code. Email requests may be limited.' };
+  return { message: 'If registration is pending, check your email for your username and verification code. Email requests may be limited.' };
 }
 export async function validateVerificationLink(rawToken) {
   const record = await EmailVerificationToken.findOne({ where: { tokenHash: tokenHash(rawToken) } });
@@ -203,11 +196,11 @@ export async function ownerLogin(username, password, recoveryToken) {
     }
     if (validRegistrationProof(recoveryToken, user)) {
       if (deliveryUnavailable) fail(503, 'EMAIL_UNAVAILABLE', 'Verification email is temporarily unavailable. Please try again later.');
-      fail(403, 'ACCOUNT_UNVERIFIED', "Your account has not been verified yet. We've sent a verification link to your registered email address. Please verify your account and set your password before logging in.");
+      fail(403, 'ACCOUNT_UNVERIFIED', "Your account has not been verified yet. We've sent a verification code and your username to your registered email address. Please verify your account and set your password before logging in.");
     }
-    fail(401, 'INVALID_CREDENTIALS', 'Invalid username or password. If registration is pending, check your email for a verification link.');
+    fail(401, 'INVALID_CREDENTIALS', 'Invalid username or password. If registration is pending, check your email for a verification code.');
   }
-  if (!user || !user.passwordHash || !(await bcrypt.compare(password, user.passwordHash))) fail(401, 'INVALID_CREDENTIALS', 'Invalid username or password. If registration is pending, check your email for a verification link.');
+  if (!user || !user.passwordHash || !(await bcrypt.compare(password, user.passwordHash))) fail(401, 'INVALID_CREDENTIALS', 'Invalid username or password. If registration is pending, check your email for a verification code.');
   await issueOtp(user, 'LOGIN_2FA');
   return { message: 'Login code sent', loginChallenge: challenge(user, 'LOGIN_2FA') };
 }

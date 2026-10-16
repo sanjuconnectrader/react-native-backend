@@ -76,26 +76,23 @@ test('expired email links cannot be completed', async (t) => {
   await assert.rejects(() => completeVerificationLink('b'.repeat(43), 'a-long-secure-password'), { code: 'LINK_EXPIRED' });
 });
 
-test('resending to a pending owner sends a fresh OTP and 24-hour link without a second account', async (t) => {
+test('resending to a pending owner sends a fresh OTP and username without a link', async (t) => {
   const user = { id: 'owner-4', username: 'NEW1234OWN', email: 'new@example.com', role: 'OWNER', active: false };
   let otp;
-  let link;
   t.mock.method(User, 'findOne', async () => user);
   t.mock.method(OTPVerification, 'findOne', async () => null);
   t.mock.method(OTPVerification, 'count', async () => 0);
   t.mock.method(OTPVerification, 'create', async (data) => { otp = data; return { id: 'otp-4', destroy: async () => {} }; });
-  t.mock.method(EmailVerificationToken, 'create', async (data) => { link = data; return { id: 'link-4', destroy: async () => {} }; });
+  t.mock.method(EmailVerificationToken, 'create', async () => { throw new Error('New emails must not create links'); });
   t.mock.method(OTPVerification, 'update', async () => [0]);
   t.mock.method(EmailVerificationToken, 'update', async () => [0]);
   await resendEmailVerification(user.email);
   assert.equal(otp.purpose, 'EMAIL_VERIFICATION');
   assert.ok(otp.expiresAt.getTime() - Date.now() <= 600_000);
-  assert.ok(link.expiresAt.getTime() - Date.now() <= 86_400_000);
-  assert.ok(link.expiresAt.getTime() - Date.now() > 86_390_000);
   assert.equal(sent.to, user.email);
   assert.match(sent.text, new RegExp(user.username));
-  assert.match(sent.text, /\/verify-email#token=/);
-  assert.ok(!sent.text.includes(link.tokenHash));
+  assert.match(sent.text, /\b\d{6}\b/);
+  assert.doesNotMatch(sent.text, /https?:\/\/|verify-email#token|localhost/);
 });
 
 test('OTP verification still returns a password setup challenge', async (t) => {
@@ -112,21 +109,22 @@ test('OTP verification still returns a password setup challenge', async (t) => {
   assert.ok(user.emailVerifiedAt);
 });
 
-test('pending login sends a new link and keeps the public failure indistinguishable from an unknown username', async (t) => {
+test('pending login sends a new code and keeps the public failure indistinguishable from an unknown username', async (t) => {
   const pending = { id: 'owner-5a', username: 'NEW1234OWN', email: 'new@example.com', role: 'OWNER', active: false };
   let found = pending;
   t.mock.method(User, 'findOne', async () => found);
   t.mock.method(OTPVerification, 'findOne', async () => null);
   t.mock.method(OTPVerification, 'count', async () => 0);
   t.mock.method(OTPVerification, 'create', async () => ({ id: 'otp-5a', destroy: async () => {} }));
-  t.mock.method(EmailVerificationToken, 'create', async () => ({ id: 'link-5a', destroy: async () => {} }));
+  t.mock.method(EmailVerificationToken, 'create', async () => { throw new Error('New emails must not create links'); });
   t.mock.method(OTPVerification, 'update', async () => [0]);
   t.mock.method(EmailVerificationToken, 'update', async () => [0]);
   t.mock.method(Restaurant, 'create', async () => { throw new Error('Login must not create a restaurant'); });
   sent = null;
   const pendingFailure = await ownerLogin(pending.username, 'anything').catch((error) => error);
   assert.equal(sent.to, pending.email);
-  assert.match(sent.text, /\/verify-email#token=/);
+  assert.match(sent.text, /\b\d{6}\b/);
+  assert.doesNotMatch(sent.text, /https?:\/\/|verify-email#token|localhost/);
   assert.match(sent.text, new RegExp(pending.username));
   found = null;
   sent = null;
@@ -143,7 +141,7 @@ test('a registration proof allows the exact pending message without disclosing o
   t.mock.method(OTPVerification, 'findOne', async () => ({ lastSentAt: new Date() }));
   t.mock.method(OTPVerification, 'create', async () => { throw new Error('Cooldown should block a second email'); });
   const proof = jwt.sign({ purpose: 'PENDING_REGISTRATION' }, process.env.JWT_SECRET, { subject: pending.id, issuer: 'serveflow-pos', expiresIn: '30d', algorithm: 'HS256' });
-  await assert.rejects(() => ownerLogin(pending.username, 'anything', proof), { code: 'ACCOUNT_UNVERIFIED', message: "Your account has not been verified yet. We've sent a verification link to your registered email address. Please verify your account and set your password before logging in." });
+  await assert.rejects(() => ownerLogin(pending.username, 'anything', proof), { code: 'ACCOUNT_UNVERIFIED', message: "Your account has not been verified yet. We've sent a verification code and your username to your registered email address. Please verify your account and set your password before logging in." });
   const wrongOwnerProof = jwt.sign({ purpose: 'PENDING_REGISTRATION' }, process.env.JWT_SECRET, { subject: 'another-owner', issuer: 'serveflow-pos', expiresIn: '30d', algorithm: 'HS256' });
   await assert.rejects(() => ownerLogin(pending.username, 'anything', wrongOwnerProof), { code: 'INVALID_CREDENTIALS' });
 });
@@ -176,7 +174,7 @@ test('new registration returns a limited proof for its own pending login', async
   t.mock.method(OTPVerification, 'findOne', async () => null);
   t.mock.method(OTPVerification, 'count', async () => 0);
   t.mock.method(OTPVerification, 'create', async () => ({ id: 'otp-8', destroy: async () => {} }));
-  t.mock.method(EmailVerificationToken, 'create', async () => ({ id: 'link-8', destroy: async () => {} }));
+  t.mock.method(EmailVerificationToken, 'create', async () => { throw new Error('New emails must not create links'); });
   t.mock.method(OTPVerification, 'update', async () => [0]);
   t.mock.method(EmailVerificationToken, 'update', async () => [0]);
   const result = await registerOwner({ owner: { firstName: 'Asha', lastName: 'Shah', email: 'newowner@example.com', phoneCountryCode: 'IN', phone: '9876543210' }, restaurant: { name: 'Test Restaurant', businessType: 'Cafe', address: 'Main St', city: 'Mumbai', state: 'Maharashtra', postalCode: '400001', timezone: 'UTC' } });
@@ -196,27 +194,27 @@ test('email-only resend gives the same response for pending and unknown addresse
   assert.deepEqual(pending, unknown);
 });
 
-test('pending login email link completes setup and permits password login', async (t) => {
+test('pending login OTP completes setup and permits password login', async (t) => {
   const password = 'a-long-secure-password';
   const user = { id: 'owner-10', restaurantId: 'restaurant-10', username: 'TEN1234OWN', email: 'ten@example.com', firstName: 'Asha', lastName: 'Shah', role: 'OWNER', active: false, emailVerifiedAt: null, async save() {} };
-  let link;
+  let otp;
   t.mock.method(User, 'findOne', async () => user);
-  t.mock.method(User, 'findByPk', async () => user);
-  t.mock.method(OTPVerification, 'findOne', async () => null);
+  t.mock.method(OTPVerification, 'findOne', async ({ where }) => where.purpose === 'EMAIL_VERIFICATION' ? otp || null : null);
   t.mock.method(OTPVerification, 'count', async () => 0);
-  t.mock.method(OTPVerification, 'create', async () => ({ id: crypto.randomUUID(), destroy: async () => {} }));
+  t.mock.method(OTPVerification, 'create', async (data) => { otp = { id: crypto.randomUUID(), ...data, attempts: 0, consumedAt: null, async save() {}, async destroy() {} }; return otp; });
   t.mock.method(OTPVerification, 'update', async () => [1]);
-  t.mock.method(EmailVerificationToken, 'create', async (data) => { link = { ...data, consumedAt: null, async save() {}, destroy: async () => {} }; return { ...link, id: 'link-10' }; });
-  t.mock.method(EmailVerificationToken, 'findOne', async () => link);
+  t.mock.method(EmailVerificationToken, 'create', async () => { throw new Error('New emails must not create links'); });
   t.mock.method(EmailVerificationToken, 'update', async () => [1]);
+  t.mock.method(RefreshSession, 'create', async () => ({}));
   t.mock.method(db, 'transaction', async (action) => action({ LOCK: { UPDATE: 'UPDATE' } }));
   const proof = jwt.sign({ purpose: 'PENDING_REGISTRATION' }, process.env.JWT_SECRET, { subject: user.id, issuer: 'serveflow-pos', expiresIn: '30d', algorithm: 'HS256' });
   await assert.rejects(() => ownerLogin(user.username, password, proof), { code: 'ACCOUNT_UNVERIFIED' });
-  const token = sent.text.match(/#token=([A-Za-z0-9_-]+)/)[1];
-  assert.equal(crypto.createHash('sha256').update(token).digest('hex'), link.tokenHash);
-  assert.equal((await validateVerificationLink(token)).username, user.username);
-  await completeVerificationLink(token, password);
-  await assert.rejects(() => completeVerificationLink(token, password), { code: 'LINK_USED' });
+  const code = sent.text.match(/\b\d{6}\b/)[0];
+  assert.doesNotMatch(sent.text, /https?:\/\/|verify-email#token|localhost/);
+  const verification = await verifyEmail(user.username, code);
+  assert.ok(otp.consumedAt);
+  await setPassword(user.username, password, verification.setupToken);
+  await assert.rejects(() => verifyEmail(user.username, code), { code: 'INVALID_STATE' });
   const login = await ownerLogin(user.username, password);
   assert.ok(login.loginChallenge);
 });
