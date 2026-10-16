@@ -1,9 +1,9 @@
 import { db } from '../src/config/database.js';
-import { migrationOrder } from '../src/models/index.js';
+import { migrationOrder, EmailVerificationToken } from '../src/models/index.js';
 
 try {
   await db.authenticate();
-  const names = [...migrationOrder.map((model) => model.tableName), 'SequelizeMeta'];
+  const names = [...migrationOrder.map((model) => model.tableName), EmailVerificationToken.tableName, 'SequelizeMeta'];
   const [tables] = await db.query(`
     SELECT c.relname, c.relrowsecurity,
       has_table_privilege('anon', c.oid, 'SELECT, INSERT, UPDATE, DELETE') AS anon_access,
