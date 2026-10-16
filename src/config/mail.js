@@ -35,6 +35,13 @@ export async function sendOtp(email, purpose, code) {
   const message = { to: email, subject, text: `Your ${subject.toLowerCase()} is ${code}. It expires in 10 minutes.` };
   await sendMessage(message);
 }
+export async function sendRegistrationVerification(email, username, code, link) {
+  await sendMessage({
+    to: email,
+    subject: 'Verify your ServeFlow POS account',
+    text: `Welcome to ServeFlow POS.\n\nYour username: ${username}\n\nEnter this code in the app: ${code}\nThe code expires in 10 minutes.\n\nOr open this secure link to verify your account and set a password: ${link}\nThe link expires in 24 hours and can be used once.\n\nIf you did not register, ignore this email.`,
+  });
+}
 export async function sendRegistrationConfirmation(email, username) {
   await sendMessage({ to: email, subject: 'Your ServeFlow POS account is ready', text: `Your ServeFlow POS account has been successfully registered.\n\nUsername: ${username}\n\nYou can now sign in with this username and your password.` });
 }

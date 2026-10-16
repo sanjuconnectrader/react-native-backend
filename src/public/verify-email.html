@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Verify your account · ServeFlow POS</title>
+  <link rel="stylesheet" href="/verification-assets/verify-email.css">
+  <script src="/verification-assets/verify-email.js" defer></script>
+</head>
+<body>
+  <div class="page">
+    <header class="brand"><span class="brand-mark">S<span class="brand-dot">•</span></span><span><strong>ServeFlow</strong><small>RESTAURANT POS</small></span></header>
+    <main class="layout">
+      <aside class="story" aria-hidden="true"><div class="story-content"><span class="eyebrow light">WELCOME TO SERVEFLOW</span><h2>Your restaurant,<br>ready to flow.</h2><p>One final step to unlock a smoother way to manage service.</p><div class="story-art"><div class="art-orbit orbit-one"></div><div class="art-orbit orbit-two"></div><div class="art-center">✓</div><div class="art-spark spark-one">✦</div><div class="art-spark spark-two">✦</div></div></div><span class="story-foot">A secure start for everything ahead.</span></aside>
+      <section class="panel" aria-live="polite">
+        <div id="loading" class="state"><span class="spinner" aria-hidden="true"></span><h1>Checking your link</h1><p>Just a moment while we verify your invitation.</p></div>
+        <div id="form-state" class="state hidden">
+          <span class="eyebrow">ACCOUNT VERIFICATION</span><div class="badge">01 / 01 · FINAL STEP</div><h1>Set your password</h1><p class="intro">Verify your account and create a secure password to get started.</p>
+          <div class="username-card"><span>Your username</span><strong id="username"></strong><small>Use this username when you sign in to the app.</small></div>
+          <form id="password-form" novalidate><label for="password">New password</label><div class="input-wrap"><input id="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required placeholder="Create a password"><button class="visibility" type="button" data-target="password" aria-label="Show password">Show</button></div><p id="password-rule" class="hint">Use at least 12 characters.</p>
+            <label for="confirm">Confirm password</label><div class="input-wrap"><input id="confirm" type="password" autocomplete="new-password" required placeholder="Enter password again"><button class="visibility" type="button" data-target="confirm" aria-label="Show password">Show</button></div><p id="confirm-rule" class="hint">Passwords must match.</p>
+            <p id="form-error" class="error hidden" role="alert"></p><button id="complete" class="primary" type="submit" disabled>Verify account &amp; set password <span>→</span></button>
+          </form><p class="security">🔒 Your password is stored securely.</p>
+        </div>
+        <div id="success-state" class="state hidden"><div class="status-icon success">✓</div><span class="eyebrow">ALL SET</span><h1>You're ready to go</h1><p>Your account has been successfully verified, and your password has been set. You can now return to the application and log in using your username and password.</p><div class="username-card"><span>Your username</span><strong id="success-username"></strong></div><a class="primary button-link" href="serveflowpos://owner/login">Back to App <span>→</span></a></div>
+        <div id="error-state" class="state hidden"><div class="status-icon warning">!</div><span class="eyebrow">VERIFICATION LINK</span><h1 id="error-title">This link can't be used</h1><p id="error-message">Request a new verification email to continue.</p><form id="resend-form"><label for="identifier">Username or email address</label><input id="identifier" type="text" autocomplete="username" required placeholder="Enter username or email"><p id="resend-message" class="hint" role="status"></p><button id="resend" class="primary" type="submit">Send new verification email <span>→</span></button></form></div>
+      </section>
+    </main>
+    <footer>© ServeFlow POS <span>Secure account verification</span></footer>
+  </div>
+</body>
+</html>

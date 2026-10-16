@@ -80,6 +80,10 @@ export const OTPVerification = define('otp_verifications', {
   userId: ref('users'), purpose: text(), codeHash: text(), expiresAt: { type: D.DATE, allowNull: false },
   consumedAt: D.DATE, attempts: { type: D.INTEGER, defaultValue: 0, allowNull: false }, lastSentAt: { type: D.DATE, allowNull: false },
 });
+export const EmailVerificationToken = define('email_verification_tokens', {
+  userId: ref('users'), tokenHash: text(), expiresAt: { type: D.DATE, allowNull: false },
+  consumedAt: D.DATE,
+}, { indexes: [{ unique: true, fields: ['token_hash'] }, { fields: ['user_id'] }] });
 export const RefreshSession = define('refresh_sessions', {
   userId: ref('users'), tokenHash: text(), expiresAt: { type: D.DATE, allowNull: false }, revokedAt: D.DATE,
 }, { indexes: [{ unique: true, fields: ['token_hash'] }, { fields: ['user_id'] }] });

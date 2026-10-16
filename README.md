@@ -41,7 +41,9 @@ All responses use `{ success, message, data }` or `{ success: false, message, er
 
 | Flow | Endpoint |
 | --- | --- |
-| Owner registration | `POST /api/auth/owner/register`, `/owner/verify-email`, `/owner/set-password` (returns a session and sends a confirmation email with the username) |
+| Owner registration | `POST /api/auth/owner/register`, `/owner/verify-email`, `/owner/set-password` |
+| Email link verification | `POST /api/auth/owner/verification-link/validate`, `/owner/verification-link/complete`; page at `/verify-email` |
+| Resend registration email | `POST /api/auth/owner/resend-code` with `identifier` (username or email) |
 | Country picker | `GET /api/countries` |
 | Owner login | `POST /api/auth/owner/login`, `/owner/verify-login` |
 | Employee login | `POST /api/auth/employee/login` |
@@ -62,7 +64,7 @@ Employee profiles have one access `role` and optional display `tags` (`WAITER`, 
 
 Registration sends `owner.phoneCountryCode` (two letter ISO country code) and a national `owner.phone`. The backend validates and stores the phone in E.164 format and derives the restaurant's country, currency, and locale. The mobile app supplies its device timezone automatically; the backend accepts an optional IANA timezone and defaults to UTC for other clients. Employee, reservation, and restaurant contact phone updates can also send `phoneCountryCode` with a national `phone`. Country, currency, locale, and timezone are not separate registration inputs.
 
-`/owner/verify-email` returns a short lived `setupToken`; send it to `/owner/set-password`. That endpoint returns an `activationChallenge`, which is required with the emailed code at `/owner/activate`. Later `/owner/login` returns a `loginChallenge` after password validation; send it with the emailed code to `/owner/verify-login`.
+Registration sends a 10-minute OTP and a one-use verification link valid for 24 hours. The email includes the generated username. `/owner/verify-email` returns a short-lived `setupToken`; send it to `/owner/set-password`. Alternatively, the user can open the email link, validate it, and set a password on the hosted page. Both paths activate the account only after password setup. The link token is stored as a SHA-256 hash and invalidated when either path completes. Production defaults `VERIFICATION_BASE_URL` to the existing Render origin; override it with the public HTTPS backend origin (without `/api`) if hosting changes. Run the new migration before serving traffic. Later `/owner/login` returns a `loginChallenge` after password validation; send it with the emailed code to `/owner/verify-login`.
 
 Example cash confirmation:
 

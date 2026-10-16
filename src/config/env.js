@@ -1,5 +1,6 @@
 import 'dotenv/config';
 
+const verificationBaseUrl = process.env.VERIFICATION_BASE_URL || (process.env.NODE_ENV === 'production' ? 'https://react-native-backend-9ojm.onrender.com' : 'http://localhost:5000');
 const required = ['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'JWT_SECRET', 'OTP_SECRET'];
 export function validateEnv() {
   const missing = required.filter((key) => !process.env[key]);
@@ -10,6 +11,7 @@ export function validateEnv() {
   if (process.env.NODE_ENV === 'production') {
     const missingMail = ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM'].filter((key) => !process.env[key]);
     if (missingMail.length) throw new Error(`Missing SMTP environment variables: ${missingMail.join(', ')}`);
+    if (!verificationBaseUrl.startsWith('https://')) throw new Error('VERIFICATION_BASE_URL must be a public HTTPS URL');
   }
 }
 
@@ -27,4 +29,5 @@ export const config = {
   jwtSecret: process.env.JWT_SECRET,
   otpSecret: process.env.OTP_SECRET,
   corsOrigins: (process.env.CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean),
+  verificationBaseUrl: verificationBaseUrl.replace(/\/+$/, ''),
 };

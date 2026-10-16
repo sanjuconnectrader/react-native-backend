@@ -4,8 +4,8 @@ import jwt from 'jsonwebtoken';
 import { Op, UniqueConstraintError } from 'sequelize';
 import { db } from '../config/database.js';
 import { config } from '../config/env.js';
-import { sendOtp, sendRegistrationConfirmation, mailConfigured } from '../config/mail.js';
-import { User, Restaurant, OTPVerification, RefreshSession, AuditLog } from '../models/index.js';
+import { sendOtp, sendRegistrationConfirmation, sendRegistrationVerification, mailConfigured } from '../config/mail.js';
+import { User, Restaurant, OTPVerification, EmailVerificationToken, RefreshSession, AuditLog } from '../models/index.js';
 import { fail } from '../errors/http-error.js';
 import { normalizePhone, resolveCountry } from './country-service.js';
 
@@ -42,6 +42,26 @@ async function issueOtp(user, purpose) {
   }
   return record;
 }
+async function issueRegistrationVerification(user) {
+  const prior = await OTPVerification.findOne({ where: { userId: user.id, purpose: 'EMAIL_VERIFICATION' }, order: [['createdAt', 'DESC']] });
+  if (prior && Date.now() - prior.lastSentAt.getTime() < 60_000) fail(429, 'VERIFICATION_COOLDOWN', 'Please wait a minute before requesting another email');
+  const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+  const rawToken = crypto.randomBytes(32).toString('base64url');
+  const now = new Date();
+  const otp = await OTPVerification.create({ userId: user.id, purpose: 'EMAIL_VERIFICATION', codeHash: hash(`${user.id}:EMAIL_VERIFICATION:${code}`), expiresAt: new Date(now.getTime() + 600_000), lastSentAt: now });
+  const link = await EmailVerificationToken.create({ userId: user.id, tokenHash: tokenHash(rawToken), expiresAt: new Date(now.getTime() + 86_400_000) });
+  try {
+    await sendRegistrationVerification(user.email, user.username, code, `${config.verificationBaseUrl}/verify-email#token=${rawToken}`);
+  } catch (error) {
+    await Promise.all([otp.destroy(), link.destroy()]);
+    console.error(`Email delivery failed [${error.code || error.name}]: ${error.message}`);
+    fail(503, 'EMAIL_UNAVAILABLE', 'Email service is temporarily unreachable. Please retry.');
+  }
+  await Promise.all([
+    OTPVerification.update({ consumedAt: now }, { where: { userId: user.id, purpose: 'EMAIL_VERIFICATION', consumedAt: null, id: { [Op.ne]: otp.id } } }),
+    EmailVerificationToken.update({ consumedAt: now }, { where: { userId: user.id, consumedAt: null, id: { [Op.ne]: link.id } } }),
+  ]);
+}
 async function verifyOtp(user, purpose, code) {
   let rejection;
   await db.transaction(async (transaction) => {
@@ -74,9 +94,9 @@ export async function registerOwner(data) {
   const email = owner.email.toLowerCase();
   const pending = await User.findOne({ where: { email, role: 'OWNER', active: false } });
   if (pending) {
-    const recent = await OTPVerification.findOne({ where: { userId: pending.id, purpose: 'EMAIL_VERIFICATION', consumedAt: null }, order: [['createdAt', 'DESC']] });
-    if (!recent || recent.expiresAt < new Date() || Date.now() - recent.lastSentAt.getTime() >= 60_000) await issueOtp(pending, 'EMAIL_VERIFICATION');
-    return { username: pending.username, message: 'Verification code ready' };
+    const recent = await OTPVerification.findOne({ where: { userId: pending.id, purpose: 'EMAIL_VERIFICATION' }, order: [['createdAt', 'DESC']] });
+    if (!recent || Date.now() - recent.lastSentAt.getTime() >= 60_000) await issueRegistrationVerification(pending);
+    return { username: pending.username, message: 'Continue verification using the email already sent' };
   }
   for (let attempt = 0; attempt < 10; attempt++) {
     const username = await uniqueUsername(normalize(data.restaurant.name), normalize(data.owner.firstName));
@@ -85,8 +105,8 @@ export async function registerOwner(data) {
         const restaurant = await Restaurant.create({ ...data.restaurant, timezone, countryCode, currencyCode, locale }, { transaction });
         return User.create({ ...owner, phone, email, username, restaurantId: restaurant.id, role: 'OWNER' }, { transaction });
       });
-      await issueOtp(result, 'EMAIL_VERIFICATION');
-      return { username, message: 'Verification code sent' };
+      await issueRegistrationVerification(result);
+      return { username, message: 'Verification email sent' };
     } catch (error) {
       if (error instanceof UniqueConstraintError && error.fields?.username) continue;
       throw error;
@@ -96,15 +116,48 @@ export async function registerOwner(data) {
 }
 export async function verifyEmail(username, code) {
   const user = await User.findOne({ where: { username: username.toUpperCase(), role: 'OWNER' } });
-  if (!user) fail(404, 'NOT_FOUND', 'Account not found');
+  if (!user || user.active) fail(400, 'INVALID_STATE', 'Account is not pending verification');
   await verifyOtp(user, 'EMAIL_VERIFICATION', code);
   user.emailVerifiedAt = new Date(); await user.save();
   return { username: user.username, setupToken: challenge(user, 'PASSWORD_SETUP') };
 }
 export async function resendEmailVerification(username) {
-  const user = await User.findOne({ where: { username: username.toUpperCase(), role: 'OWNER', active: false } });
-  if (user) await issueOtp(user, 'EMAIL_VERIFICATION');
-  return { message: 'If verification is pending, a code was sent' };
+  const identifier = username.trim();
+  const user = await User.findOne({ where: { role: 'OWNER', active: false, [Op.or]: [{ username: identifier.toUpperCase() }, { email: identifier.toLowerCase() }] } });
+  if (user) await issueRegistrationVerification(user);
+  return { message: 'If registration is pending, a new code and verification link were sent' };
+}
+export async function validateVerificationLink(rawToken) {
+  const record = await EmailVerificationToken.findOne({ where: { tokenHash: tokenHash(rawToken) } });
+  if (!record) fail(400, 'LINK_INVALID', 'This verification link is invalid');
+  const user = await User.findByPk(record.userId);
+  if (record.consumedAt || user?.active) fail(410, 'LINK_USED', 'This verification link has already been used');
+  if (record.expiresAt <= new Date()) fail(410, 'LINK_EXPIRED', 'This verification link has expired');
+  if (!user || user.role !== 'OWNER') fail(400, 'LINK_INVALID', 'This verification link is invalid');
+  return { username: user.username, email: user.email, expiresAt: record.expiresAt };
+}
+export async function completeVerificationLink(rawToken, password) {
+  const passwordHash = await bcrypt.hash(password, 12);
+  let user;
+  await db.transaction(async (transaction) => {
+    const record = await EmailVerificationToken.findOne({ where: { tokenHash: tokenHash(rawToken) }, transaction, lock: transaction.LOCK.UPDATE });
+    if (!record) fail(400, 'LINK_INVALID', 'This verification link is invalid');
+    user = await User.findByPk(record.userId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (record.consumedAt || user?.active) fail(410, 'LINK_USED', 'This verification link has already been used');
+    if (record.expiresAt <= new Date()) fail(410, 'LINK_EXPIRED', 'This verification link has expired');
+    if (!user || user.role !== 'OWNER') fail(400, 'LINK_INVALID', 'This verification link is invalid');
+    user.emailVerifiedAt ||= new Date();
+    user.passwordHash = passwordHash;
+    user.active = true;
+    record.consumedAt = new Date();
+    await user.save({ transaction });
+    await record.save({ transaction });
+    await EmailVerificationToken.update({ consumedAt: new Date() }, { where: { userId: user.id, consumedAt: null }, transaction });
+    await OTPVerification.update({ consumedAt: new Date() }, { where: { userId: user.id, purpose: 'EMAIL_VERIFICATION', consumedAt: null }, transaction });
+  });
+  try { await sendRegistrationConfirmation(user.email, user.username); }
+  catch (error) { console.error(`Registration confirmation delivery failed [${error.code || error.name}]: ${error.message}`); }
+  return { username: user.username };
 }
 export async function setPassword(username, password, setupToken) {
   const passwordHash = await bcrypt.hash(password, 12);
@@ -115,6 +168,7 @@ export async function setPassword(username, password, setupToken) {
     user.passwordHash = passwordHash;
     user.active = true;
     await user.save({ transaction });
+    await EmailVerificationToken.update({ consumedAt: new Date() }, { where: { userId: user.id, consumedAt: null }, transaction });
     return { user, loginSession: await session(user, transaction) };
   });
   try { await sendRegistrationConfirmation(user.email, user.username); }
@@ -122,7 +176,8 @@ export async function setPassword(username, password, setupToken) {
   return loginSession;
 }
 export async function ownerLogin(username, password) {
-  const user = await User.findOne({ where: { username: username.toUpperCase(), role: 'OWNER', active: true } });
+  const user = await User.findOne({ where: { username: username.toUpperCase(), role: 'OWNER' } });
+  if (user && !user.active) fail(403, 'ACCOUNT_UNVERIFIED', 'Registration is incomplete. Verify your email and set a password before signing in.');
   if (!user || !user.passwordHash || !(await bcrypt.compare(password, user.passwordHash))) fail(401, 'INVALID_CREDENTIALS', 'Invalid credentials');
   await issueOtp(user, 'LOGIN_2FA');
   return { message: 'Login code sent', loginChallenge: challenge(user, 'LOGIN_2FA') };

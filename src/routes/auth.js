@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import Joi from 'joi';
+import { rateLimit } from 'express-rate-limit';
 import * as auth from '../services/auth-service.js';
 import { authenticate } from '../middleware/auth.js';
 import { User, Restaurant } from '../models/index.js';
@@ -14,12 +15,17 @@ const check = (schema) => (req, _res, next) => {
 const username = Joi.string().trim().min(7).max(20).required();
 const code = Joi.string().pattern(/^\d{6}$/).required();
 const password = Joi.string().min(12).max(128).required();
-router.post('/owner/register', check(Joi.object({ owner: Joi.object({ firstName: Joi.string().required(), lastName: Joi.string().required(), email: Joi.string().email().required(), phoneCountryCode: Joi.string().length(2).uppercase().required(), phone: Joi.string().required() }).required(),
+const emailLimit = rateLimit({ windowMs: 60 * 60_000, limit: 5, standardHeaders: 'draft-8', legacyHeaders: false });
+const otpLimit = rateLimit({ windowMs: 15 * 60_000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false });
+const verificationToken = Joi.string().pattern(/^[A-Za-z0-9_-]{43}$/).required();
+router.post('/owner/register', emailLimit, check(Joi.object({ owner: Joi.object({ firstName: Joi.string().required(), lastName: Joi.string().required(), email: Joi.string().email().required(), phoneCountryCode: Joi.string().length(2).uppercase().required(), phone: Joi.string().required() }).required(),
   restaurant: Joi.object({ name: Joi.string().required(), businessType: Joi.string().required(), address: Joi.string().required(), city: Joi.string().required(), state: Joi.string().required(), postalCode: Joi.string().required(),
     timezone: Joi.string().max(100).optional() }).required() })),
   wrap(async (req, res) => ok(res, await auth.registerOwner(req.body), 'Registration started', 201)));
-router.post('/owner/verify-email', check(Joi.object({ username, code })), wrap(async (req, res) => ok(res, await auth.verifyEmail(req.body.username, req.body.code))));
-router.post('/owner/resend-code', check(Joi.object({ username })), wrap(async (req, res) => ok(res, await auth.resendEmailVerification(req.body.username))));
+router.post('/owner/verify-email', otpLimit, check(Joi.object({ username, code })), wrap(async (req, res) => ok(res, await auth.verifyEmail(req.body.username, req.body.code))));
+router.post('/owner/resend-code', emailLimit, check(Joi.object({ identifier: Joi.string().trim().min(3).max(255).required() })), wrap(async (req, res) => ok(res, await auth.resendEmailVerification(req.body.identifier))));
+router.post('/owner/verification-link/validate', check(Joi.object({ token: verificationToken })), wrap(async (req, res) => ok(res, await auth.validateVerificationLink(req.body.token))));
+router.post('/owner/verification-link/complete', check(Joi.object({ token: verificationToken, password })), wrap(async (req, res) => ok(res, await auth.completeVerificationLink(req.body.token, req.body.password))));
 router.post('/owner/set-password', check(Joi.object({ username, password, setupToken: Joi.string().required() })), wrap(async (req, res) => ok(res, await auth.setPassword(req.body.username, req.body.password, req.body.setupToken))));
 router.post('/owner/login', check(Joi.object({ username, password: Joi.string().required() })), wrap(async (req, res) => ok(res, await auth.ownerLogin(req.body.username, req.body.password))));
 router.post('/owner/verify-login', check(Joi.object({ username, code, loginChallenge: Joi.string().required() })), wrap(async (req, res) => ok(res, await auth.ownerLoginVerify(req.body.username, req.body.code, req.body.loginChallenge))));
