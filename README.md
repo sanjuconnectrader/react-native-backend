@@ -66,6 +66,8 @@ Registration sends `owner.phoneCountryCode` (two letter ISO country code) and a 
 
 Registration sends a 10-minute OTP and a one-use verification link valid for 24 hours. The email includes the generated username. `/owner/verify-email` returns a short-lived `setupToken`; send it to `/owner/set-password`. Alternatively, the user can open the email link, validate it, and set a password on the hosted page. Both paths activate the account only after password setup. The link token is stored as a SHA-256 hash and invalidated when either path completes. Production defaults `VERIFICATION_BASE_URL` to the existing Render origin; override it with the public HTTPS backend origin (without `/api`) if hosting changes. Run the new migration before serving traffic. Later `/owner/login` returns a `loginChallenge` after password validation; send it with the emailed code to `/owner/verify-login`.
 
+An owner login attempt for a pending account sends another registration email when the one-minute cooldown and five-email-per-hour account limit permit it. Login requests are limited to 10 per IP per 15 minutes. Without proof from that device's original registration, pending, unknown, and incorrect-password logins return the same public failure. New registration returns a purpose-limited `recoveryToken` for the mobile app to store securely and include on later owner login requests; this allows the exact pending-registration message without exposing account status to callers who merely know a username. `/owner/resend-code` accepts an email address for the app's Continue verification screen and returns the same response for pending and unknown addresses.
+
 Example cash confirmation:
 
 ```json

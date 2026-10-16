@@ -82,6 +82,7 @@ test('resending to a pending owner sends a fresh OTP and 24-hour link without a 
   let link;
   t.mock.method(User, 'findOne', async () => user);
   t.mock.method(OTPVerification, 'findOne', async () => null);
+  t.mock.method(OTPVerification, 'count', async () => 0);
   t.mock.method(OTPVerification, 'create', async (data) => { otp = data; return { id: 'otp-4', destroy: async () => {} }; });
   t.mock.method(EmailVerificationToken, 'create', async (data) => { link = data; return { id: 'link-4', destroy: async () => {} }; });
   t.mock.method(OTPVerification, 'update', async () => [0]);
@@ -111,9 +112,50 @@ test('OTP verification still returns a password setup challenge', async (t) => {
   assert.ok(user.emailVerifiedAt);
 });
 
-test('pending owners cannot start login', async (t) => {
-  t.mock.method(User, 'findOne', async () => ({ role: 'OWNER', active: false }));
-  await assert.rejects(() => ownerLogin('NEW1234OWN', 'a-long-secure-password'), { code: 'ACCOUNT_UNVERIFIED' });
+test('pending login sends a new link and keeps the public failure indistinguishable from an unknown username', async (t) => {
+  const pending = { id: 'owner-5a', username: 'NEW1234OWN', email: 'new@example.com', role: 'OWNER', active: false };
+  let found = pending;
+  t.mock.method(User, 'findOne', async () => found);
+  t.mock.method(OTPVerification, 'findOne', async () => null);
+  t.mock.method(OTPVerification, 'count', async () => 0);
+  t.mock.method(OTPVerification, 'create', async () => ({ id: 'otp-5a', destroy: async () => {} }));
+  t.mock.method(EmailVerificationToken, 'create', async () => ({ id: 'link-5a', destroy: async () => {} }));
+  t.mock.method(OTPVerification, 'update', async () => [0]);
+  t.mock.method(EmailVerificationToken, 'update', async () => [0]);
+  t.mock.method(Restaurant, 'create', async () => { throw new Error('Login must not create a restaurant'); });
+  sent = null;
+  const pendingFailure = await ownerLogin(pending.username, 'anything').catch((error) => error);
+  assert.equal(sent.to, pending.email);
+  assert.match(sent.text, /\/verify-email#token=/);
+  assert.match(sent.text, new RegExp(pending.username));
+  found = null;
+  sent = null;
+  const unknownFailure = await ownerLogin(pending.username, 'anything').catch((error) => error);
+  assert.equal(pendingFailure.status, 401);
+  assert.equal(pendingFailure.code, unknownFailure.code);
+  assert.equal(pendingFailure.message, unknownFailure.message);
+  assert.equal(sent, null);
+});
+
+test('a registration proof allows the exact pending message without disclosing other accounts', async (t) => {
+  const pending = { id: 'owner-5b', username: 'NEW1234OWN', email: 'new@example.com', role: 'OWNER', active: false };
+  t.mock.method(User, 'findOne', async () => pending);
+  t.mock.method(OTPVerification, 'findOne', async () => ({ lastSentAt: new Date() }));
+  t.mock.method(OTPVerification, 'create', async () => { throw new Error('Cooldown should block a second email'); });
+  const proof = jwt.sign({ purpose: 'PENDING_REGISTRATION' }, process.env.JWT_SECRET, { subject: pending.id, issuer: 'serveflow-pos', expiresIn: '30d', algorithm: 'HS256' });
+  await assert.rejects(() => ownerLogin(pending.username, 'anything', proof), { code: 'ACCOUNT_UNVERIFIED', message: "Your account has not been verified yet. We've sent a verification link to your registered email address. Please verify your account and set your password before logging in." });
+  const wrongOwnerProof = jwt.sign({ purpose: 'PENDING_REGISTRATION' }, process.env.JWT_SECRET, { subject: 'another-owner', issuer: 'serveflow-pos', expiresIn: '30d', algorithm: 'HS256' });
+  await assert.rejects(() => ownerLogin(pending.username, 'anything', wrongOwnerProof), { code: 'INVALID_CREDENTIALS' });
+});
+
+test('registration email requests stop at five per account per hour', async (t) => {
+  const pending = { id: 'owner-5c', username: 'NEW1234OWN', email: 'new@example.com', role: 'OWNER', active: false };
+  t.mock.method(User, 'findOne', async () => pending);
+  t.mock.method(OTPVerification, 'findOne', async () => null);
+  t.mock.method(OTPVerification, 'count', async () => 5);
+  t.mock.method(OTPVerification, 'create', async () => { throw new Error('Hourly limit should block a sixth email'); });
+  const proof = jwt.sign({ purpose: 'PENDING_REGISTRATION' }, process.env.JWT_SECRET, { subject: pending.id, issuer: 'serveflow-pos', expiresIn: '30d', algorithm: 'HS256' });
+  await assert.rejects(() => ownerLogin(pending.username, 'anything', proof), { code: 'ACCOUNT_UNVERIFIED' });
 });
 
 test('registering a pending email resumes the existing account', async (t) => {
@@ -123,6 +165,60 @@ test('registering a pending email resumes the existing account', async (t) => {
   t.mock.method(Restaurant, 'create', async () => { throw new Error('Unexpected duplicate restaurant'); });
   const result = await registerOwner({ owner: { firstName: 'Asha', lastName: 'Shah', email: pending.email, phoneCountryCode: 'IN', phone: '9876543210' }, restaurant: { name: 'Test Restaurant', businessType: 'Cafe', address: 'Main St', city: 'Mumbai', state: 'Maharashtra', postalCode: '400001', timezone: 'UTC' } });
   assert.equal(result.username, pending.username);
+});
+
+test('new registration returns a limited proof for its own pending login', async (t) => {
+  let created;
+  t.mock.method(User, 'findOne', async () => null);
+  t.mock.method(Restaurant, 'create', async () => ({ id: 'restaurant-8' }));
+  t.mock.method(User, 'create', async (data) => { created = { id: 'owner-8', ...data, active: false }; return created; });
+  t.mock.method(db, 'transaction', async (action) => action({}));
+  t.mock.method(OTPVerification, 'findOne', async () => null);
+  t.mock.method(OTPVerification, 'count', async () => 0);
+  t.mock.method(OTPVerification, 'create', async () => ({ id: 'otp-8', destroy: async () => {} }));
+  t.mock.method(EmailVerificationToken, 'create', async () => ({ id: 'link-8', destroy: async () => {} }));
+  t.mock.method(OTPVerification, 'update', async () => [0]);
+  t.mock.method(EmailVerificationToken, 'update', async () => [0]);
+  const result = await registerOwner({ owner: { firstName: 'Asha', lastName: 'Shah', email: 'newowner@example.com', phoneCountryCode: 'IN', phone: '9876543210' }, restaurant: { name: 'Test Restaurant', businessType: 'Cafe', address: 'Main St', city: 'Mumbai', state: 'Maharashtra', postalCode: '400001', timezone: 'UTC' } });
+  assert.equal(result.username, created.username);
+  const claims = jwt.verify(result.recoveryToken, process.env.JWT_SECRET);
+  assert.equal(claims.sub, created.id);
+  assert.equal(claims.purpose, 'PENDING_REGISTRATION');
+});
+
+test('email-only resend gives the same response for pending and unknown addresses', async (t) => {
+  let found = { id: 'owner-9', email: 'pending@example.com', active: false };
+  t.mock.method(User, 'findOne', async () => found);
+  t.mock.method(OTPVerification, 'findOne', async () => ({ lastSentAt: new Date() }));
+  const pending = await resendEmailVerification('pending@example.com');
+  found = null;
+  const unknown = await resendEmailVerification('unknown@example.com');
+  assert.deepEqual(pending, unknown);
+});
+
+test('pending login email link completes setup and permits password login', async (t) => {
+  const password = 'a-long-secure-password';
+  const user = { id: 'owner-10', restaurantId: 'restaurant-10', username: 'TEN1234OWN', email: 'ten@example.com', firstName: 'Asha', lastName: 'Shah', role: 'OWNER', active: false, emailVerifiedAt: null, async save() {} };
+  let link;
+  t.mock.method(User, 'findOne', async () => user);
+  t.mock.method(User, 'findByPk', async () => user);
+  t.mock.method(OTPVerification, 'findOne', async () => null);
+  t.mock.method(OTPVerification, 'count', async () => 0);
+  t.mock.method(OTPVerification, 'create', async () => ({ id: crypto.randomUUID(), destroy: async () => {} }));
+  t.mock.method(OTPVerification, 'update', async () => [1]);
+  t.mock.method(EmailVerificationToken, 'create', async (data) => { link = { ...data, consumedAt: null, async save() {}, destroy: async () => {} }; return { ...link, id: 'link-10' }; });
+  t.mock.method(EmailVerificationToken, 'findOne', async () => link);
+  t.mock.method(EmailVerificationToken, 'update', async () => [1]);
+  t.mock.method(db, 'transaction', async (action) => action({ LOCK: { UPDATE: 'UPDATE' } }));
+  const proof = jwt.sign({ purpose: 'PENDING_REGISTRATION' }, process.env.JWT_SECRET, { subject: user.id, issuer: 'serveflow-pos', expiresIn: '30d', algorithm: 'HS256' });
+  await assert.rejects(() => ownerLogin(user.username, password, proof), { code: 'ACCOUNT_UNVERIFIED' });
+  const token = sent.text.match(/#token=([A-Za-z0-9_-]+)/)[1];
+  assert.equal(crypto.createHash('sha256').update(token).digest('hex'), link.tokenHash);
+  assert.equal((await validateVerificationLink(token)).username, user.username);
+  await completeVerificationLink(token, password);
+  await assert.rejects(() => completeVerificationLink(token, password), { code: 'LINK_USED' });
+  const login = await ownerLogin(user.username, password);
+  assert.ok(login.loginChallenge);
 });
 
 test('an activated owner can complete password login and email 2FA', async (t) => {

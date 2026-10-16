@@ -17,6 +17,7 @@ const code = Joi.string().pattern(/^\d{6}$/).required();
 const password = Joi.string().min(12).max(128).required();
 const emailLimit = rateLimit({ windowMs: 60 * 60_000, limit: 5, standardHeaders: 'draft-8', legacyHeaders: false });
 const otpLimit = rateLimit({ windowMs: 15 * 60_000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false });
+const loginLimit = rateLimit({ windowMs: 15 * 60_000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false });
 const verificationToken = Joi.string().pattern(/^[A-Za-z0-9_-]{43}$/).required();
 router.post('/owner/register', emailLimit, check(Joi.object({ owner: Joi.object({ firstName: Joi.string().required(), lastName: Joi.string().required(), email: Joi.string().email().required(), phoneCountryCode: Joi.string().length(2).uppercase().required(), phone: Joi.string().required() }).required(),
   restaurant: Joi.object({ name: Joi.string().required(), businessType: Joi.string().required(), address: Joi.string().required(), city: Joi.string().required(), state: Joi.string().required(), postalCode: Joi.string().required(),
@@ -27,7 +28,7 @@ router.post('/owner/resend-code', emailLimit, check(Joi.object({ identifier: Joi
 router.post('/owner/verification-link/validate', check(Joi.object({ token: verificationToken })), wrap(async (req, res) => ok(res, await auth.validateVerificationLink(req.body.token))));
 router.post('/owner/verification-link/complete', check(Joi.object({ token: verificationToken, password })), wrap(async (req, res) => ok(res, await auth.completeVerificationLink(req.body.token, req.body.password))));
 router.post('/owner/set-password', check(Joi.object({ username, password, setupToken: Joi.string().required() })), wrap(async (req, res) => ok(res, await auth.setPassword(req.body.username, req.body.password, req.body.setupToken))));
-router.post('/owner/login', check(Joi.object({ username, password: Joi.string().required() })), wrap(async (req, res) => ok(res, await auth.ownerLogin(req.body.username, req.body.password))));
+router.post('/owner/login', loginLimit, check(Joi.object({ username, password: Joi.string().required(), recoveryToken: Joi.string().max(1000).optional() })), wrap(async (req, res) => ok(res, await auth.ownerLogin(req.body.username, req.body.password, req.body.recoveryToken))));
 router.post('/owner/verify-login', check(Joi.object({ username, code, loginChallenge: Joi.string().required() })), wrap(async (req, res) => ok(res, await auth.ownerLoginVerify(req.body.username, req.body.code, req.body.loginChallenge))));
 router.post('/employee/login', check(Joi.object({ username, pin: Joi.string().pattern(/^\d{4,8}$/).required() })), wrap(async (req, res) => ok(res, await auth.employeeLogin(req.body.username, req.body.pin))));
 router.post('/refresh', check(Joi.object({ refreshToken: Joi.string().required() })), wrap(async (req, res) => ok(res, await auth.refreshSession(req.body.refreshToken))));

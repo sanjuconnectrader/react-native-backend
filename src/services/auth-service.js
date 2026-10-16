@@ -15,6 +15,14 @@ const tokenHash = (raw) => crypto.createHash('sha256').update(raw).digest('hex')
 const normalize = (s) => s.normalize('NFKD').replace(/[^a-zA-Z]/g, '').toUpperCase().padEnd(3, 'X').slice(0, 3);
 const publicUser = (u) => ({ id: u.id, username: u.username, firstName: u.firstName, lastName: u.lastName, role: u.role, restaurantId: u.restaurantId, active: u.active });
 const challenge = (user, purpose) => jwt.sign({ purpose }, config.jwtSecret, { subject: user.id, issuer: 'serveflow-pos', expiresIn: '10m', algorithm: 'HS256' });
+const registrationProof = (user) => jwt.sign({ purpose: 'PENDING_REGISTRATION' }, config.jwtSecret, { subject: user.id, issuer: 'serveflow-pos', expiresIn: '30d', algorithm: 'HS256' });
+function validRegistrationProof(raw, user) {
+  if (!raw || !user) return false;
+  try {
+    const claims = jwt.verify(raw, config.jwtSecret, { algorithms: ['HS256'], issuer: 'serveflow-pos' });
+    return claims.sub === user.id && claims.purpose === 'PENDING_REGISTRATION';
+  } catch { return false; }
+}
 function verifyChallenge(raw, user, purpose) {
   try {
     const claims = jwt.verify(raw, config.jwtSecret, { algorithms: ['HS256'], issuer: 'serveflow-pos' });
@@ -45,11 +53,15 @@ async function issueOtp(user, purpose) {
 async function issueRegistrationVerification(user) {
   const prior = await OTPVerification.findOne({ where: { userId: user.id, purpose: 'EMAIL_VERIFICATION' }, order: [['createdAt', 'DESC']] });
   if (prior && Date.now() - prior.lastSentAt.getTime() < 60_000) fail(429, 'VERIFICATION_COOLDOWN', 'Please wait a minute before requesting another email');
+  const sentInHour = await OTPVerification.count({ where: { userId: user.id, purpose: 'EMAIL_VERIFICATION', createdAt: { [Op.gte]: new Date(Date.now() - 60 * 60_000) } } });
+  if (sentInHour >= 5) fail(429, 'VERIFICATION_LIMIT', 'Please wait before requesting another verification email');
   const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
   const rawToken = crypto.randomBytes(32).toString('base64url');
   const now = new Date();
   const otp = await OTPVerification.create({ userId: user.id, purpose: 'EMAIL_VERIFICATION', codeHash: hash(`${user.id}:EMAIL_VERIFICATION:${code}`), expiresAt: new Date(now.getTime() + 600_000), lastSentAt: now });
-  const link = await EmailVerificationToken.create({ userId: user.id, tokenHash: tokenHash(rawToken), expiresAt: new Date(now.getTime() + 86_400_000) });
+  let link;
+  try { link = await EmailVerificationToken.create({ userId: user.id, tokenHash: tokenHash(rawToken), expiresAt: new Date(now.getTime() + 86_400_000) }); }
+  catch (error) { await otp.destroy(); throw error; }
   try {
     await sendRegistrationVerification(user.email, user.username, code, `${config.verificationBaseUrl}/verify-email#token=${rawToken}`);
   } catch (error) {
@@ -106,7 +118,7 @@ export async function registerOwner(data) {
         return User.create({ ...owner, phone, email, username, restaurantId: restaurant.id, role: 'OWNER' }, { transaction });
       });
       await issueRegistrationVerification(result);
-      return { username, message: 'Verification email sent' };
+      return { username, recoveryToken: registrationProof(result), message: 'Verification email sent' };
     } catch (error) {
       if (error instanceof UniqueConstraintError && error.fields?.username) continue;
       throw error;
@@ -124,8 +136,13 @@ export async function verifyEmail(username, code) {
 export async function resendEmailVerification(username) {
   const identifier = username.trim();
   const user = await User.findOne({ where: { role: 'OWNER', active: false, [Op.or]: [{ username: identifier.toUpperCase() }, { email: identifier.toLowerCase() }] } });
-  if (user) await issueRegistrationVerification(user);
-  return { message: 'If registration is pending, a new code and verification link were sent' };
+  if (user) {
+    try { await issueRegistrationVerification(user); }
+    catch (error) {
+      if (!['VERIFICATION_COOLDOWN', 'VERIFICATION_LIMIT', 'EMAIL_UNAVAILABLE'].includes(error.code)) throw error;
+    }
+  }
+  return { message: 'If registration is pending, check your email for a verification link and code. Email requests may be limited.' };
 }
 export async function validateVerificationLink(rawToken) {
   const record = await EmailVerificationToken.findOne({ where: { tokenHash: tokenHash(rawToken) } });
@@ -175,10 +192,22 @@ export async function setPassword(username, password, setupToken) {
   catch (error) { console.error(`Registration confirmation delivery failed [${error.code || error.name}]: ${error.message}`); }
   return loginSession;
 }
-export async function ownerLogin(username, password) {
+export async function ownerLogin(username, password, recoveryToken) {
   const user = await User.findOne({ where: { username: username.toUpperCase(), role: 'OWNER' } });
-  if (user && !user.active) fail(403, 'ACCOUNT_UNVERIFIED', 'Registration is incomplete. Verify your email and set a password before signing in.');
-  if (!user || !user.passwordHash || !(await bcrypt.compare(password, user.passwordHash))) fail(401, 'INVALID_CREDENTIALS', 'Invalid credentials');
+  if (user && !user.active) {
+    let deliveryUnavailable = false;
+    try { await issueRegistrationVerification(user); }
+    catch (error) {
+      if (!['VERIFICATION_COOLDOWN', 'VERIFICATION_LIMIT', 'EMAIL_UNAVAILABLE'].includes(error.code)) throw error;
+      deliveryUnavailable = error.code === 'EMAIL_UNAVAILABLE';
+    }
+    if (validRegistrationProof(recoveryToken, user)) {
+      if (deliveryUnavailable) fail(503, 'EMAIL_UNAVAILABLE', 'Verification email is temporarily unavailable. Please try again later.');
+      fail(403, 'ACCOUNT_UNVERIFIED', "Your account has not been verified yet. We've sent a verification link to your registered email address. Please verify your account and set your password before logging in.");
+    }
+    fail(401, 'INVALID_CREDENTIALS', 'Invalid username or password. If registration is pending, check your email for a verification link.');
+  }
+  if (!user || !user.passwordHash || !(await bcrypt.compare(password, user.passwordHash))) fail(401, 'INVALID_CREDENTIALS', 'Invalid username or password. If registration is pending, check your email for a verification link.');
   await issueOtp(user, 'LOGIN_2FA');
   return { message: 'Login code sent', loginChallenge: challenge(user, 'LOGIN_2FA') };
 }
