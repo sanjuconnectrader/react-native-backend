@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import nodemailer from 'nodemailer';
 
@@ -16,8 +17,8 @@ let sent;
 nodemailer.createTransport = () => ({ sendMail: async (message) => { sent = message; } });
 
 const { db } = await import('../src/config/database.js');
-const { User, RefreshSession, OTPVerification, EmailVerificationToken } = await import('../src/models/index.js');
-const { setPassword, validateVerificationLink, completeVerificationLink, resendEmailVerification, verifyEmail, ownerLogin } = await import('../src/services/auth-service.js');
+const { User, Restaurant, RefreshSession, OTPVerification, EmailVerificationToken, AuditLog } = await import('../src/models/index.js');
+const { registerOwner, setPassword, validateVerificationLink, completeVerificationLink, resendEmailVerification, verifyEmail, ownerLogin, ownerLoginVerify } = await import('../src/services/auth-service.js');
 
 test('verified owner sets a password, receives a session and username email without another OTP', async (t) => {
   const user = {
@@ -113,4 +114,31 @@ test('OTP verification still returns a password setup challenge', async (t) => {
 test('pending owners cannot start login', async (t) => {
   t.mock.method(User, 'findOne', async () => ({ role: 'OWNER', active: false }));
   await assert.rejects(() => ownerLogin('NEW1234OWN', 'a-long-secure-password'), { code: 'ACCOUNT_UNVERIFIED' });
+});
+
+test('registering a pending email resumes the existing account', async (t) => {
+  const pending = { id: 'owner-6', username: 'OLD1234OWN', email: 'pending@example.com', role: 'OWNER', active: false };
+  t.mock.method(User, 'findOne', async () => pending);
+  t.mock.method(OTPVerification, 'findOne', async () => ({ lastSentAt: new Date() }));
+  t.mock.method(Restaurant, 'create', async () => { throw new Error('Unexpected duplicate restaurant'); });
+  const result = await registerOwner({ owner: { firstName: 'Asha', lastName: 'Shah', email: pending.email, phoneCountryCode: 'IN', phone: '9876543210' }, restaurant: { name: 'Test Restaurant', businessType: 'Cafe', address: 'Main St', city: 'Mumbai', state: 'Maharashtra', postalCode: '400001', timezone: 'UTC' } });
+  assert.equal(result.username, pending.username);
+});
+
+test('an activated owner can complete password login and email 2FA', async (t) => {
+  const password = 'a-long-secure-password';
+  const user = { id: 'owner-7', restaurantId: 'restaurant-7', username: 'YES1234OWN', email: 'yes@example.com', firstName: 'Asha', lastName: 'Shah', role: 'OWNER', active: true, passwordHash: await bcrypt.hash(password, 4) };
+  let otp;
+  t.mock.method(User, 'findOne', async () => user);
+  t.mock.method(OTPVerification, 'findOne', async () => otp || null);
+  t.mock.method(OTPVerification, 'create', async (data) => { otp = { ...data, attempts: 0, consumedAt: null, async save() {} }; return otp; });
+  t.mock.method(RefreshSession, 'create', async () => ({}));
+  t.mock.method(AuditLog, 'create', async () => ({}));
+  t.mock.method(db, 'transaction', async (action) => action({ LOCK: { UPDATE: 'UPDATE' } }));
+  const start = await ownerLogin(user.username, password);
+  const code = sent.text.match(/\b\d{6}\b/)[0];
+  const session = await ownerLoginVerify(user.username, code, start.loginChallenge);
+  assert.equal(session.user.username, user.username);
+  assert.ok(session.accessToken);
+  assert.ok(otp.consumedAt);
 });
